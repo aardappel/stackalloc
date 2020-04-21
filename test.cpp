@@ -129,6 +129,20 @@ int main() {
 	assert(o2.a == 4);
 	assert(o4.a == 4);
 	assert(&o2 == &o4);
+	(void)o1;
+	(void)o3;
+	(void)o4;
+
+	// This test only works on Windows if USE_GUARD_PAGES==0.
+	if (true) {
+		// Low level test: see if random access works when not using guard pages.
+		auto st = sa::acquire_stack();
+		for (int i = 0; i < 100000; i++) {
+			auto r = rand();
+			st->sp[(r << 14) + r] = 1;
+		}
+		sa::release_stack();
+	}
 
  	return 0;
 }

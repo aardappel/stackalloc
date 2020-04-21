@@ -36,23 +36,39 @@ namespace sa {
 #ifdef _WIN32
 
 size_t page_size = 0;
-enum { COMMIT_PAGES_AT_ONCE = 256 };  // 1MB at a time.
+enum {
+    // 1MB at a time, just in case these exceptions are expensive, wouldn't
+    // want to do it for every single page.
+    COMMIT_PAGES_AT_ONCE = 256,
+    // Guard pages is the traditional way to do this, but they only support
+    // linear initial access. Without a guard page we can support random
+    // access which seems more flexible?
+    USE_GUARD_PAGES = 0
+};
 
 bool commit_and_guard(uint8_t *vp) {
     auto page_increment = page_size * COMMIT_PAGES_AT_ONCE;
-    return VirtualAlloc(vp, page_increment, MEM_COMMIT, PAGE_READWRITE)  &&
-           VirtualAlloc(vp + page_increment, page_size, MEM_COMMIT,
-                        PAGE_READWRITE | PAGE_GUARD);
+    return VirtualAlloc(vp, page_increment, MEM_COMMIT, PAGE_READWRITE) &&
+           (!USE_GUARD_PAGES ||
+            VirtualAlloc(vp + page_increment, page_size, MEM_COMMIT,
+                         PAGE_READWRITE | PAGE_GUARD));
 }
 
 LONG WINAPI guard_page_exception_filter(_EXCEPTION_POINTERS *ep) {
-    if (ep->ExceptionRecord->ExceptionCode != STATUS_GUARD_PAGE_VIOLATION) {
+    if (ep->ExceptionRecord->ExceptionCode !=
+        (USE_GUARD_PAGES ? STATUS_GUARD_PAGE_VIOLATION
+                         : STATUS_ACCESS_VIOLATION)) {
         return EXCEPTION_CONTINUE_SEARCH;
     }
-    // We hit our guard page. Find start of next page.
+    // We hit a guard or reserved page. Find start of page.
     auto hit_address = ep->ExceptionRecord->ExceptionInformation[1];
-    auto page_start = (uint8_t *)((size_t)hit_address & ~(page_size - 1)) + page_size;
-    // Reinstall our guard page:
+    auto page_start = (uint8_t *)((size_t)hit_address & ~(page_size - 1));
+    if (USE_GUARD_PAGES) page_start += page_size;
+    // Commit new pages and/or reinstall our guard page.
+    // If this is an access violation but it was outside our reserved space,
+    // then VirtualAlloc should fail and turn it into a regular exception.
+    // FIXME: If this is a page guard hit, we should really be checking
+    // if it is our page guard, not someone elses (e.g. the execution stack?)
     return commit_and_guard(page_start) ? EXCEPTION_CONTINUE_EXECUTION
                                         : EXCEPTION_CONTINUE_SEARCH;
 }
